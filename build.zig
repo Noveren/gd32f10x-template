@@ -2,21 +2,114 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) !void {
-    // const project = gd32f10x.project(b, .{
-    //     .name = "hello",
-    //     .lib_root = "src/gd32f10x",
-    //     .serial = .GD32F103C8T6,
-    // });
-    // project.use_std(.{
-
-    // });
-    // b.installArtifact(project.elf);
-
-    const elf = try gd32f10x.addExecutable(b, .{
-        .name = "hello",
-        .lib_root = "src/gd32f10x",
-        .serial = .GD32F103C8T6,
+    const enable_show_info = b.option(bool, "info", "TODO. (default 'true')") orelse true;
+    // -Drelease=[bool]
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
+    const target = b.resolveTargetQuery(.{
+        .cpu_arch = .thumb,
+        .os_tag = .freestanding,
+        .abi = .eabi,
+        .cpu_model = .{ .explicit = &std.Target.arm.cpu.cortex_m3 },
     });
+
+    const name = b.option([]const u8, "name", "The name of the object file. (default 'demo')") orelse "demo";
+    const strip = b.option(bool, "strip", "Strip the debug info from the object file. (default false)") orelse true;
+
+    const elf = b.addExecutable(.{
+        .name = name,
+        .target = target,
+        .optimize = optimize,
+        .link_libc = false,
+        .linkage = .static,
+        .single_threaded = true,
+        .strip = strip,
+        .error_tracing = false,
+    });
+
+    const path_to_startup = b.option([]const u8, "startup", "The relative path to the startup file. (default './startup.s')") orelse "./startup.s";
+    elf.addAssemblyFile(b.path(path_to_startup));
+
+    const path_to_linker_script = b.option([]const u8, "ld", "The relative path to the linker script file. (default './src/linker.ld')") orelse "./linker.ld";
+    const entry_symbol_name = b.option([]const u8, "entry", "The entry symbol  of the program. (default 'Reset_Handler')") orelse "Reset_Handler";
+    elf.linker_script = b.path(path_to_linker_script);
+    elf.entry = .{ .symbol_name = entry_symbol_name };
+
+    elf.addIncludePath(b.path("./gd32f10x"));
+    elf.addIncludePath(b.path("./gd32f10x/core"));
+    elf.addIncludePath(b.path("./gd32f10x/std/inc"));
+
+    const device = b.option([]const u8, "device", "The type of device := [MD | HD | XD | CL]. (default 'MD')") orelse "MD";
+    if (std.mem.eql(u8, device, "MD") or std.mem.eql(u8, device, "HD") or std.mem.eql(u8, device, "XD") or std.mem.eql(u8, device, "CL")) {
+        elf.defineCMacro(b.fmt("GD32F10X_{s}", .{ device }), null);
+    } else {
+        std.debug.print("Error: The option '-Ddevice=[MD | HD | XD | CL]'", .{});
+        return error.InvalidOptionForDevice;
+    }
+
+    if (b.option(bool, "rcu", "Use peripheral rcu. (default 'true')") orelse true) {
+        elf.defineCMacro("GD32F10X_USE_RCU", null);
+        elf.addCSourceFile(.{ .file = b.path("./gd32f10x/std/src/gd32f10x_rcu.c") });
+    }
+    if (b.option(bool, "fmc", "Use peripheral fmc. (default 'true')") orelse true) {
+        elf.defineCMacro("GD32F10X_USE_FMC", null);
+        elf.addCSourceFile(.{ .file = b.path("./gd32f10x/std/src/gd32f10x_fmc.c") });
+    }
+    if (b.option(bool, "misc", "Use peripheral misc. (default 'true')") orelse true) {
+        elf.defineCMacro("GD32F10X_USE_MISC", null);
+        elf.addCSourceFile(.{ .file = b.path("./gd32f10x/std/src/gd32f10x_misc.c") });
+    }
+
+    // TODO b.option to select the clock frequency
+    elf.addCSourceFile(.{ .file = b.path("./gd32f10x/system_gd32f10x.c") });
+
+    if (b.option(bool, "gpio", "Use peripheral gpio. (default 'false')") orelse false) {
+        elf.defineCMacro("GD32F10X_USE_GPIO", null);
+        elf.addCSourceFile(.{ .file = b.path("./gd32f10x/std/src/gd32f10x_gpio.c") });
+    }
+    if (b.option(bool, "usart", "Use peripheral usart. (default 'false')") orelse false) {
+        elf.defineCMacro("GD32F10X_USE_USART", null);
+        elf.addCSourceFile(.{ .file = b.path("./gd32f10x/std/src/gd32f10x_usart.c") });
+    }
+    if (b.option(bool, "spi", "Use peripheral spi. (default 'false')") orelse false) {
+        elf.defineCMacro("GD32F10X_USE_SPI", null);
+        elf.addCSourceFile(.{ .file = b.path("./gd32f10x/std/src/gd32f10x_spi.c") });
+    }
+    if (b.option(bool, "adc", "Use peripheral adc. (default 'false')") orelse false) {
+        elf.defineCMacro("GD32F10X_USE_ADC", null);
+        elf.addCSourceFile(.{ .file = b.path("./gd32f10x/std/src/gd32f10x_adc.c") });
+    }
+    
+    const option_include_dirs = b.option([]const u8, "inc", "The relative path to include dir for the program. (example './src;./src/lib' or './src;./src/lib;')");
+    if (option_include_dirs) |include_dirs| {
+        var it = std.mem.tokenizeAny(u8, include_dirs, ";\n ");
+        while (it.next()) |include_dir| {
+            if (enable_show_info) std.debug.print("User include dir: {s}\n", .{ include_dir });
+            elf.addIncludePath(b.path(include_dir));
+        }
+    }
+
+    const option_user_c_files = b.option([]const u8, "src", "The relative path to user c file for the program. (example './src/main.c;./src/lib.c' or './src/main.c;./src/lib.c;')");
+    if (option_user_c_files) |user_c_files| {
+        var it = std.mem.tokenizeAny(u8, user_c_files, ";\n ");
+        while (it.next()) |user_c_file| {
+            if (enable_show_info) std.debug.print("User C file: {s}\n", .{ user_c_file });
+            elf.addCSourceFile(.{ .file = b.path(user_c_file) });
+        }
+    }
+
+    const option_macros = b.option([]const u8, "macro", "The macro for the program. (example 'DEBUG;OPEN' ro 'DEBUG;OPEN;')");
+    if (option_macros) |macros| {
+        var it = std.mem.tokenizeAny(u8, macros, ";\n ");
+        while (it.next()) |macro| {
+            if (enable_show_info) std.debug.print("User macro: {s}\n", .{ macro });
+            elf.defineCMacro(macro, null);
+        }
+    }
+
+    const bin = b.addObjCopy(elf.getEmittedBin(), .{ .format = .bin });
+    bin.step.dependOn(&elf.step);
+    const copy_bin = b.addInstallBinFile(bin.getOutput(), b.fmt("{s}.bin", .{ std.mem.trimRight(u8, elf.name, std.fs.path.extension(elf.name)) }));
+    b.default_step.dependOn(&copy_bin.step);
     b.installArtifact(elf);
 
     const clangd_emit = b.option(bool, "clangd", "Enable to generate clangd config file") orelse false;
@@ -24,201 +117,6 @@ pub fn build(b: *std.Build) !void {
         try clangd.CompileCommandsJson.generate(b, elf.root_module, .{});
     }
 }
-
-const gd32f10x = struct {
-    const Options = struct {
-        name: []const u8,
-        serial: Serial,
-        lib_root: ?[]const u8 = null,
-        strip: ?bool = null,
-    };
-
-    const Serial = enum {
-        GD32F103C8T6,
-    };
-
-    fn cortex_m3(b: *std.Build) std.Build.ResolvedTarget {
-        return b.resolveTargetQuery(.{
-            .cpu_arch = .thumb,
-            .os_tag = .freestanding,
-            .abi = .eabi,
-            .cpu_model = .{ .explicit = &std.Target.arm.cpu.cortex_m3 },
-        });
-    }
-
-    const Context = struct {
-        b: *std.Build,
-        elf: *std.Build.Step.Compile,
-        lib_root: []const u8,
-
-        fn path(ctx: Context, sub_path: []const u8) std.Build.LazyPath {
-            return ctx.b.path(ctx.b.fmt("{s}/{s}", .{ ctx.lib_root, sub_path }));
-        }
-
-        fn addIncludePath(ctx: Context, sub_path: []const u8) void {
-            ctx.elf.addIncludePath(ctx.path(sub_path));
-        }
-
-        fn load_core(ctx: Context) void {
-            ctx.addIncludePath("core");
-        }
-
-        fn load_std(ctx: Context) void {
-            ctx.addIncludePath("std/inc");
-        }
-    };
-
-
-
-    fn addExecutable(b: *std.Build, options: Options) !*std.Build.Step.Compile {
-        const target = cortex_m3(b);
-        const optimize = b.standardOptimizeOption(.{});
-
-        const elf = b.addExecutable(.{
-            .name = options.name,
-            .target = target,
-            .optimize = optimize,
-            .link_libc = false,
-            .linkage = .static,
-            .single_threaded = true,
-            .strip = options.strip orelse false,
-            .error_tracing = false,
-        });
-
-        const ctx = Context {
-            .b = b,
-            .elf = elf,
-            .lib_root = options.lib_root orelse "gd32f10x",
-        };
-
-        ctx.load_core();
-        ctx.load_std();
-
-        // 添加标准外设库头文件与源文件
-        elf.addIncludePath(b.path("src/gd32f10x/std/inc"));
-        try addCSourceFileInDir(b, elf, "src/gd32f10x/std/src", &[_][]const u8 {
-            "gd32f10x_can.c", // DBG
-            "gd32f10x_enet.c",
-        });
-
-        // 添加标准外设库接口头文件
-        // 添加系统时钟初始化 system_gd32f10x.c，并启用实现其需要的最少外设
-        elf.addIncludePath(b.path("src/gd32f10x"));
-        elf.defineCMacro("GD32F10X_USE_FMC", null);
-        elf.defineCMacro("GD32F10X_USE_RCU", null);
-        elf.defineCMacro("GD32F10X_USE_MISC", null);
-        elf.addCSourceFile(.{ .file = b.path("src/gd32f10x/system_gd32f10x.c") });
-
-        // ======================================
-        switch (options.serial) {
-            .GD32F103C8T6 => {
-                elf.defineCMacro("GD32F10X_MD", null);
-            }
-        }
-
-        const root: []const u8 = b.pathFromRoot(".");
-        const relative_app: []const u8 = b.fmt("src/{s}", .{ options.name });
-        const absolute_app: []const u8 = try std.fs.path.resolve(b.allocator, &[_][]const u8 {
-            root, relative_app
-        });
-        defer b.allocator.free(absolute_app);
-
-        // 检查或创建用户项目根目录 `src/{options.name}`
-        _ = try utils.checkOrCreateDir(absolute_app);
-
-        // TODO 生成链接脚本
-        elf.setLinkerScript(b.path(b.fmt("{s}/{s}", .{ relative_app, "linker.ld" })));
-        elf.entry = .{ .symbol_name = "Reset_Handler" };
-        elf.link_gc_sections = true;
-
-        // TODO 生成启动文件
-        elf.addAssemblyFile(b.path(b.fmt("{s}/{s}", .{ relative_app, "startup.s" })));
-
-        // 添加头文件路径, 搜索并添加源文件
-        elf.addIncludePath(b.path(relative_app));
-        try addCSourceFileInDir(b, elf, relative_app, null);
-
-        return elf;
-    }
-
-    fn addCSourceFileInDir(
-        b: *std.Build,
-        elf: *std.Build.Step.Compile,
-        relative_path: []const u8,
-        exclude_filenames: ?[]const []const u8
-    ) !void {
-        const root: []const u8 = b.pathFromRoot(".");
-        const absolute_path: []const u8 = try std.fs.path.resolve(b.allocator, &[_][]const u8 {
-            root, relative_path
-        });
-        defer b.allocator.free(absolute_path);
-
-        const source_filenames = try utils.findFileWithExtension(b.allocator, absolute_path, ".c");
-        defer source_filenames.deinit();
-        var source_filenames_iter = std.mem.splitSequence(u8, source_filenames.items, ", ");
-        while (source_filenames_iter.next()) |source_filename| {
-            var is_exclude: bool = false;
-            if (exclude_filenames) |_exclude_filenames| {
-                for (_exclude_filenames) |exclude_filename| {
-                    is_exclude = std.mem.eql(u8, source_filename, exclude_filename);
-                    if (is_exclude) break;
-                }
-            }
-            if (is_exclude) continue;
-
-            const relative_source_file = b.fmt("{s}/{s}", .{ relative_path, source_filename });
-            std.log.debug("{s}", .{ relative_source_file });
-            elf.addCSourceFile(.{ .file = b.path(relative_source_file) });
-        }
-    }
-};
-
-const utils = struct {
-    fn println_s(string: []const u8) void {
-        std.debug.print("{s}\n", .{ string });
-    }
-
-    pub fn findFileWithExtension(
-        allocator: std.mem.Allocator,
-        absolute_path: []const u8,
-        extension: []const u8,
-    ) (std.fs.File.OpenError || std.fs.Dir.Iterator.Error || std.mem.Allocator.Error)!std.ArrayList(u8) {
-        var dir = try std.fs.openDirAbsolute(absolute_path, .{ .iterate = true });
-        defer dir.close();
-
-        var collect = std.ArrayList(u8).init(allocator);
-
-        var dir_iter = dir.iterate();
-        while (dir_iter.next()) |i| {
-            const entry = i orelse break;
-            const is_file_with_extension = switch (entry.kind) {
-                else => false,
-                .file => std.mem.eql(u8, extension, std.fs.path.extension(entry.name)),
-            };
-            if (is_file_with_extension) {
-                if (collect.items.len > 0) {
-                    try collect.appendSlice(", ");
-                }
-                try collect.appendSlice(entry.name);
-            }
-        } else |err| { return err; }
-        return collect;
-    }
-
-    pub fn checkOrCreateDir(absolute_path: []const u8) std.posix.MakeDirError!bool {
-        return if (std.fs.makeDirAbsolute(absolute_path)) |_| true else |err| switch (err) {
-            std.posix.MakeDirError.PathAlreadyExists => false,
-            else => err,
-        };
-    }
-
-    pub fn exists(absolute_path: []const u8) std.fs.Dir.AccessError!bool {
-        return if (std.fs.accessAbsolute(absolute_path, .{})) |_| true else |err| switch (err) {
-            std.fs.Dir.AccessError.FileNotFound => false,
-            else => err,
-        };
-    }
-};
 
 const clangd = struct {
     fn getZigRootPath(b: *std.Build) ![]const u8 {
