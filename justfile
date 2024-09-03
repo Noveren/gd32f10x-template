@@ -2,7 +2,7 @@
 default_name := "firmware"
 
 build name=default_name:
-    zig build -Drelease \
+    @zig build -Drelease \
     -Dname={{name}} \
     -Dld="./src/linker.ld" \
     -Dstartup="./src/startup.s" \
@@ -27,3 +27,7 @@ dump name=default_name:
     --architecture=armv8-m.base \
     -M force-thumb \
     ./zig-out/bin/{{name}} > ./zig-out/bin/{{name}}.s
+
+flash name=default_name:
+    pyocd list
+    pyocd flash --target gd32f103c8 ./zig-out/bin/{{name}}.bin
